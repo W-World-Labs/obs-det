@@ -1,0 +1,58 @@
+# OmniDet v0 — ConvNeXt v2 Base scale-up of the winning Tiny recipe.
+#
+# Tiny recipe (mAP 0.0376) demonstrated the right combination of changes.
+# This config swaps the 28M Tiny backbone for the 88M Base variant to test
+# whether more capacity converges faster on VisDrone tiny aerial targets.
+# Everything else stays identical to v0_convnextv2_unfrozen_p2_nwd.yaml.
+#
+# Memory budget (RTX 5090 32GB):
+#   - Tiny @ batch=6 unfrozen + P2 = 22.1 GB
+#   - Base ≈ 3.1x backbone activations -> batch=2 is the safe starting point
+#
+# Run:
+#   PYTHONPATH=src python scripts/train_visdrone.py \
+#     --config configs/v0_convnextv2_base_unfrozen_p2_nwd.yaml
+
+# --- Model / backbone ---
+backbone_preset: convnextv2_base_fcmae
+backbone_pretrained: true
+freeze_backbone: false
+backbone_lr_scale: 0.1
+use_p2_memory: true
+tasks: [detection]
+
+# --- Small-object loss / matcher ---
+small_box_weight: 2.0
+min_small_box_pixels: 32
+nwd_weight: 0.5
+nwd_constant: 0.05
+
+# --- Training ---
+hardware_profile: rtx5090_32g
+epochs: 50
+batch_size: 6                      # Initial batch=2 used only 8.8GB GPU memory
+                                   # with 5% util (data-bound), so the bigger
+                                   # backbone has ~22GB of headroom on the 5090.
+                                   # 6 puts memory at ~26GB and saturates the
+                                   # GPU pipeline (matches winning Tiny config).
+lr: 2e-4
+lr_scheduler: cosine
+lr_warmup_steps: 1500              # 3x dataset passes per step => longer warmup
+lr_min: 1e-6
+grad_clip: 1.0
+compile: true
+augment: true
+num_workers: 12
+prefetch_factor: 4
+precision: bf16
+
+# --- Data ---
+dataset: visdrone
+images: /data/omnidet_datasets/visdrone_hf/train/images
+annotations: /data/omnidet_datasets/visdrone_hf/train/annotations
+val_images: /data/omnidet_datasets/visdrone_hf/val/images
+val_annotations: /data/omnidet_datasets/visdrone_hf/val/annotations
+
+# --- Output ---
+log_csv: logs/v0_convnextv2_base_unfrozen_p2_nwd.csv
+out: checkpoints/omnidet_v0_convnextv2_base_unfrozen_p2_nwd.pt

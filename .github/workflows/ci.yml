@@ -1,0 +1,143 @@
+name: Public source CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: obs-det-source-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  source-tests-package:
+    if: ${{ github.event.repository.private == false }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      PIP_CONFIG_FILE: /dev/null
+      PIP_INDEX_URL: https://pypi.org/simple
+      PIP_EXTRA_INDEX_URL: ''
+      PIP_DISABLE_PIP_VERSION_CHECK: '1'
+      HF_HUB_OFFLINE: '1'
+      HF_DATASETS_OFFLINE: '1'
+      HF_HUB_DISABLE_TELEMETRY: '1'
+      OMP_NUM_THREADS: '2'
+      MKL_NUM_THREADS: '2'
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+      - name: Check committed source and external-asset boundaries
+        shell: python
+        run: |
+          import ast, hashlib, json, pathlib, subprocess, unicodedata
+          total = 0
+          names = {}
+          prohibited = {'.pt', '.pth', '.onnx', '.engine', '.plan', '.png', '.jpg', '.jpeg', '.mp4', '.mkv', '.so', '.dll'}
+          for entry in subprocess.check_output(['git', 'ls-tree', '-r', '-l', '-z', 'HEAD']).decode().split('\0'):
+              if not entry:
+                  continue
+              metadata, name = entry.split('\t', 1)
+              mode, kind, oid, size = metadata.split()
+              assert kind == 'blob' and mode in {'100644', '100755'}, 'Links/nested sources require independent review'
+              path = pathlib.PurePosixPath(name)
+              assert path.suffix.lower() not in prohibited, 'Models, media or native products are outside source scope'
+              assert not {'.venv', '__pycache__', 'node_modules', 'checkpoints', 'logs', 'artifacts', 'build', 'dist'}.intersection(path.parts)
+              assert not any(part.startswith('.env') for part in path.parts)
+              for index in range(1, len(path.parts) + 1):
+                  prefix = '/'.join(path.parts[:index])
+                  key = unicodedata.normalize('NFC', prefix).casefold()
+                  assert names.setdefault(key, prefix) == prefix, 'Portable path collision'
+              assert int(size) <= 10 * 1024 * 1024
+              total += int(size)
+              if path.suffix == '.py':
+                  ast.parse(pathlib.Path(name).read_text(), filename=name)
+          assert total <= 100 * 1024 * 1024
+          inventory = json.loads(pathlib.Path('THIRD-PARTY-DEPENDENCIES.json').read_text())
+          assert hashlib.sha256(pathlib.Path('requirements-ci.txt').read_bytes()).hexdigest() == inventory['requirements_ci_sha256']
+          assert all(inventory[key] is False for key in ('datasets_distributed', 'models_distributed', 'media_distributed', 'plugins_distributed'))
+          print(json.dumps({'source_bytes': total, 'external_models_bundled': False}))
+      - name: Scan source and complete reachable history before installing dependencies
+        run: |
+          set -euo pipefail
+          audit_dir="$RUNNER_TEMP/obs-det-audit"
+          mkdir "$audit_dir"
+          curl --fail --show-error --location --retry 2 --connect-timeout 10 --max-time 120 \
+            https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz -o "$audit_dir/gitleaks.tgz"
+          echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  $audit_dir/gitleaks.tgz" | sha256sum -c -
+          tar -xzf "$audit_dir/gitleaks.tgz" -C "$audit_dir" gitleaks
+          "$audit_dir/gitleaks" dir . --ignore-gitleaks-allow --redact=100 --no-banner
+          "$audit_dir/gitleaks" git . --log-opts='--all --full-history' --ignore-gitleaks-allow --redact=100 --no-banner
+      - name: Install hash-pinned original CPU dependencies
+        run: |
+          python -m pip install --require-hashes --only-binary=:all: -r requirements-ci.txt
+          python -m pip install --no-deps --no-build-isolation -e .
+          python -m pip check
+      - name: Run all original synthetic regression checks without external networking
+        run: |
+          obs_python="$(command -v python)"
+          sudo --preserve-env=PATH,HF_HUB_OFFLINE,HF_DATASETS_OFFLINE,HF_HUB_DISABLE_TELEMETRY,OMP_NUM_THREADS,MKL_NUM_THREADS unshare --net /bin/bash -s -- "$obs_python" <<'SH'
+          set -euo pipefail
+          ip link set lo up
+          exec "$1" -m pytest -q
+          SH
+      - name: Build source wheel and sdist
+        run: python -m build --no-isolation --outdir "$RUNNER_TEMP/obs-det-packages"
+      - name: Verify actual packages and archive the complete committed source
+        shell: python
+        run: |
+          import email, hashlib, json, os, pathlib, subprocess, tarfile, tomllib, zipfile
+          committed = {name: subprocess.check_output(['git', 'show', 'HEAD:' + name])
+                       for name in subprocess.check_output(['git', 'ls-files'], text=True).splitlines()}
+          version = tomllib.loads(committed['pyproject.toml'].decode())['project']['version']
+          output = pathlib.Path(os.environ['RUNNER_TEMP']) / 'obs-det-packages'
+          wheel = output / f'omnidet-{version}-py3-none-any.whl'
+          sdist = output / f'omnidet-{version}.tar.gz'
+          assert {path.name for path in output.iterdir()} == {wheel.name, sdist.name}
+          runtime = {name.removeprefix('src/'): data for name, data in committed.items() if name.startswith('src/omnidet/')}
+          info = f'omnidet-{version}.dist-info/'
+          metadata = {info + name for name in ('METADATA', 'WHEEL', 'top_level.txt', 'RECORD', 'licenses/LICENSE', 'licenses/THIRD-PARTY-NOTICES.md')}
+          with zipfile.ZipFile(wheel) as archive:
+              assert set(archive.namelist()) == set(runtime) | metadata, 'Unexpected wheel inventory'
+              for name, data in runtime.items():
+                  assert archive.read(name) == data, name
+              for name in ('LICENSE', 'THIRD-PARTY-NOTICES.md'):
+                  assert archive.read(info + 'licenses/' + name) == committed[name], name
+              declared = email.message_from_bytes(archive.read(info + 'METADATA'))
+              assert declared['License-Expression'] == 'MIT' and declared['Version'] == version
+          with tarfile.open(sdist) as archive:
+              members = [member for member in archive.getmembers() if not member.isdir()]
+              assert all(member.isfile() for member in members)
+              prefix = f'omnidet-{version}/'
+              generated = {'PKG-INFO', 'setup.cfg'} | {'src/omnidet.egg-info/' + name for name in ('PKG-INFO', 'SOURCES.txt', 'dependency_links.txt', 'requires.txt', 'top_level.txt')}
+              assert {member.name.removeprefix(prefix) for member in members} == set(committed) | generated, 'Unexpected sdist inventory'
+              for name, data in committed.items():
+                  assert archive.extractfile(prefix + name).read() == data, name
+          sha = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          tree = subprocess.check_output(['git', 'rev-parse', 'HEAD^{tree}'], text=True).strip()
+          source = output / ('obs-det-source-' + sha + '.tar.gz')
+          subprocess.run(['git', 'archive', '--format=tar.gz', '--prefix=obs-det-' + sha + '/', '--output=' + str(source), sha], check=True)
+          manifest = output / 'SOURCE.json'
+          rows = [{'path': name, 'bytes': len(data), 'sha256': hashlib.sha256(data).hexdigest()} for name, data in committed.items()]
+          manifest.write_text(json.dumps({'repository': 'https://github.com/W-World-Labs/obs-det', 'commit': sha, 'tree': tree,
+              'scope': 'complete project-owned detector, scripts, configs and existing assertions; no installed dependencies, weights, data, media or protected plugins',
+              'files': rows}, indent=2) + '\n')
+          (output / 'SHA256SUMS').write_text(''.join(hashlib.sha256(path.read_bytes()).hexdigest() + '  ' + path.name + '\n'
+              for path in (wheel, sdist, source, manifest)), encoding='utf-8', newline='\n')
+          print(json.dumps({'commit': sha, 'tree': tree, 'source_files': len(committed), 'wheel_files': len(runtime) + len(metadata),
+                            'sdist_files': len(committed) + len(generated), 'source_and_license_bytes': 'exact'}))
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: obs-det-source-packages
+          path: ${{ runner.temp }}/obs-det-packages/*
+          if-no-files-found: error
+          retention-days: 7

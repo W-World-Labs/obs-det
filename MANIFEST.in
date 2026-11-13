@@ -1,0 +1,5 @@
+include .gitattributes .gitignore AGENTS.md PROVENANCE.md THIRD-PARTY-NOTICES.md THIRD-PARTY-DEPENDENCIES.json requirements-ci.txt
+recursive-include .github *.yml
+recursive-include scripts *.py *.sh
+recursive-include configs *.yaml
+recursive-include tests *.py

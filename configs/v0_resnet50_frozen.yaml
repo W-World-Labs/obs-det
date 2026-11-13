@@ -1,0 +1,40 @@
+# Train OmniDet v0 with a frozen ResNet50 backbone (Apache 2.0 / timm).
+#
+# Run:
+#   PYTHONPATH=src python scripts/train_visdrone.py --config configs/v0_resnet50_frozen.yaml
+#
+# Any CLI flag still overrides what is in this file. Keys match the argparse
+# dest names of train_visdrone.py (hyphens and underscores are equivalent).
+
+# --- Model / backbone ---
+backbone_preset: resnet50          # see src/omnidet/models/backbone_presets.py
+backbone_pretrained: true          # download ImageNet-1k weights via timm
+freeze_backbone: true              # only neck + head are trained
+tasks: [detection]
+
+# --- Training ---
+hardware_profile: rtx5090_32g
+epochs: 50
+batch_size: 16                     # ResNet50 activations need more memory
+                                   # than the clean-room small backbone
+lr: 2e-4
+lr_scheduler: cosine
+lr_warmup_steps: 500
+lr_min: 1e-6
+grad_clip: 1.0
+compile: true
+augment: true
+num_workers: 12
+prefetch_factor: 4
+precision: bf16
+
+# --- Data (VisDrone defaults) ---
+dataset: visdrone
+images: /data/omnidet_datasets/visdrone_hf/train/images
+annotations: /data/omnidet_datasets/visdrone_hf/train/annotations
+val_images: /data/omnidet_datasets/visdrone_hf/val/images
+val_annotations: /data/omnidet_datasets/visdrone_hf/val/annotations
+
+# --- Output ---
+log_csv: logs/v0_resnet50_frozen.csv
+out: checkpoints/omnidet_v0_resnet50_frozen.pt

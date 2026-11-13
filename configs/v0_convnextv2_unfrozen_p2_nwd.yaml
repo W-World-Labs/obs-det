@@ -1,0 +1,75 @@
+# OmniDet v0 — small-object detection optimization pass.
+#
+# Bundles every change from the 2024-2026 small-object DETR survey that
+# matched our TensorRT-FP16 constraints:
+#
+#   1. Unfrozen ConvNeXt v2 FCMAE backbone with differential LR
+#      (backbone_lr_scale=0.1). Frozen ImageNet backbones in our previous
+#      runs gave mAP=0.0001-0.0002 because their semantics don't match
+#      aerial top-down distributions. Unfreezing + low backbone LR is the
+#      RT-DETR / D-FINE / RF-DETR / "Rethinking RS Backbones" recipe.
+#
+#   2. P2 (stride-4) features added to the decoder cross-attention memory
+#      (use_p2_memory=true). Drone-DETR / UAV-DETR / Dome-DETR all flag
+#      this as essential for tiny aerial objects. Cross-attn cost stays
+#      bounded by num_queries (no encoder self-attn on P2 — that's what
+#      the "deformable required" papers care about, and we don't run one).
+#
+#   3. Area-weighted box loss (small_box_weight=2.0). Linearly upweights
+#      L1 + GIoU + NWD up to 2.0x for boxes < min_small_box_pixels.
+#
+#   4. NWD term in matcher + box loss (nwd_weight=0.5, nwd_constant=0.05).
+#      Treats boxes as 2D Gaussians; stays well-behaved on sub-pixel boxes
+#      where IoU/GIoU collapse (arXiv 2110.13389). The matcher and
+#      criterion share the weight so cost surface and gradient agree.
+#
+#   5. Augmentation: scale-jitter expanded 0.5-1.5 (was 0.6-1.0);
+#      copy-paste prioritises small source boxes by 1/area weighting.
+#
+# Run:
+#   PYTHONPATH=src python scripts/train_visdrone.py \
+#     --config configs/v0_convnextv2_unfrozen_p2_nwd.yaml
+
+# --- Model / backbone ---
+backbone_preset: convnextv2_tiny_fcmae
+backbone_pretrained: true
+freeze_backbone: false             # <<< the biggest change
+backbone_lr_scale: 0.1             # backbone LR = 0.1 x head LR
+use_p2_memory: true
+tasks: [detection]
+
+# --- Small-object loss / matcher ---
+small_box_weight: 2.0
+min_small_box_pixels: 32
+nwd_weight: 0.5
+nwd_constant: 0.05
+
+# --- Training ---
+hardware_profile: rtx5090_32g
+epochs: 50
+batch_size: 6                      # Unfrozen ConvNeXt v2 + P2 memory (57.6k
+                                   # extra tokens at 960²) consumes ~5.3GB
+                                   # activations per sample at bf16. 6 fits
+                                   # in 32GB with headroom for the encoder
+                                   # cross-attn workspace.
+lr: 2e-4
+lr_scheduler: cosine
+lr_warmup_steps: 1000
+lr_min: 1e-6
+grad_clip: 1.0
+compile: true
+augment: true
+num_workers: 12
+prefetch_factor: 4
+precision: bf16
+
+# --- Data ---
+dataset: visdrone
+images: /data/omnidet_datasets/visdrone_hf/train/images
+annotations: /data/omnidet_datasets/visdrone_hf/train/annotations
+val_images: /data/omnidet_datasets/visdrone_hf/val/images
+val_annotations: /data/omnidet_datasets/visdrone_hf/val/annotations
+
+# --- Output ---
+log_csv: logs/v0_convnextv2_unfrozen_p2_nwd.csv
+out: checkpoints/omnidet_v0_convnextv2_unfrozen_p2_nwd.pt

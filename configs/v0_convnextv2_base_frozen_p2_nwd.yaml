@@ -1,0 +1,57 @@
+# OmniDet v0 — frozen ConvNeXt v2 Base with the small-object stack.
+#
+# Hypothesis: Tiny frozen failed (mAP=0.0001) because 28M params + 1x1
+# projection couldn't bridge ImageNet -> aerial. Base (88M, 3.1x more
+# capacity) provides much richer pretrained features; if the gap is mostly
+# about feature *richness* rather than fine-tuning, Base frozen could
+# actually beat Tiny unfrozen — at a fraction of the wall time.
+#
+# Compute math:
+#   - Base unfrozen + batch=6 = 0.41 steps/s = 22h for 50ep (too long)
+#   - Base frozen: no backward through 88M params, no optim state ->
+#     similar speed to Tiny unfrozen (~3-4 min/epoch, ~3h for 50ep)
+#
+# Run:
+#   PYTHONPATH=src python scripts/train_visdrone.py \
+#     --config configs/v0_convnextv2_base_frozen_p2_nwd.yaml
+
+# --- Model / backbone ---
+backbone_preset: convnextv2_base_fcmae
+backbone_pretrained: true
+freeze_backbone: true              # <<< the change vs unfrozen Tiny config
+backbone_lr_scale: 0.1             # ignored when frozen, but kept for parity
+use_p2_memory: true
+tasks: [detection]
+
+# --- Small-object loss / matcher ---
+small_box_weight: 2.0
+min_small_box_pixels: 32
+nwd_weight: 0.5
+nwd_constant: 0.05
+
+# --- Training ---
+hardware_profile: rtx5090_32g
+epochs: 50
+batch_size: 16                     # Frozen backbone -> no activation
+                                   # storage cost, fits much bigger batch
+lr: 2e-4
+lr_scheduler: cosine
+lr_warmup_steps: 500
+lr_min: 1e-6
+grad_clip: 1.0
+compile: true
+augment: true
+num_workers: 12
+prefetch_factor: 4
+precision: bf16
+
+# --- Data ---
+dataset: visdrone
+images: /data/omnidet_datasets/visdrone_hf/train/images
+annotations: /data/omnidet_datasets/visdrone_hf/train/annotations
+val_images: /data/omnidet_datasets/visdrone_hf/val/images
+val_annotations: /data/omnidet_datasets/visdrone_hf/val/annotations
+
+# --- Output ---
+log_csv: logs/v0_convnextv2_base_frozen_p2_nwd.csv
+out: checkpoints/omnidet_v0_convnextv2_base_frozen_p2_nwd.pt
