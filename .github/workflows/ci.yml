@@ -76,7 +76,7 @@ jobs:
           echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  $audit_dir/gitleaks.tgz" | sha256sum -c -
           tar -xzf "$audit_dir/gitleaks.tgz" -C "$audit_dir" gitleaks
           "$audit_dir/gitleaks" dir . --ignore-gitleaks-allow --redact=100 --no-banner
-          "$audit_dir/gitleaks" git . --log-opts='--all --full-history' --ignore-gitleaks-allow --redact=100 --no-banner
+          "$audit_dir/gitleaks" git . --log-opts='--all --full-history -m' --ignore-gitleaks-allow --redact=100 --no-banner
       - name: Install hash-pinned original CPU dependencies
         run: |
           python -m pip install --require-hashes --only-binary=:all: -r requirements-ci.txt
