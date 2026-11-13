@@ -1,6 +1,7 @@
 # Train OmniDet v0 with a frozen ConvNeXt v2 Tiny FCMAE backbone.
 # This is the MAE-style pretrained option (Fully-Convolutional Masked
-# Autoencoder pretraining, then ImageNet-1k fine-tuning). License: Apache 2.0.
+# Autoencoder pretraining, then ImageNet-1k fine-tuning). Checkpoint: CC-BY-NC-4.0;
+# timm's Apache-2.0 code license is separate from checkpoint and data rights.
 #
 # Run:
 #   PYTHONPATH=src python scripts/train_visdrone.py --config configs/v0_convnextv2_tiny_fcmae.yaml

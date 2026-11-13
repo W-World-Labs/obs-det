@@ -1,4 +1,5 @@
-# Train OmniDet v0 with a frozen ResNet50 backbone (Apache 2.0 / timm).
+# Train OmniDet v0 with a frozen ResNet50 backbone (timm code/card: Apache-2.0;
+# checkpoint acquisition and ImageNet data permissions remain separate).
 #
 # Run:
 #   PYTHONPATH=src python scripts/train_visdrone.py --config configs/v0_resnet50_frozen.yaml
